@@ -1,0 +1,286 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// Set the LCD address (usually 0x27 for 16x2 or 0x3F for 20x4)
+#define I2C_ADDR 0x27
+
+// Set the number of columns and rows on the LCD
+#define LCD_COLUMNS 16
+#define LCD_ROWS 2
+
+// Create instances
+LiquidCrystal_I2C lcd(I2C_ADDR, LCD_COLUMNS, LCD_ROWS);
+
+
+const byte ROWS = 4;
+const byte COLS = 3;
+int sensorPin = 7;
+int sensor2Pin = 2;
+int buzzer = 6;
+
+char keys[ROWS][COLS] = {
+  {'1','2','3'},
+  {'4','5','6'},
+  {'7','8','9'},
+  {'*','0','#'}
+};
+
+byte rowPins[ROWS] = {A2, A3, A4, A5};
+byte colPins[COLS] = {5, 4, 3};
+
+int greenLED = A1;
+int redLED = A0;
+int servoPin = 8;
+
+String password = "";
+bool isLocked = true;
+String unlock = "1234";
+String lock = "4321";
+
+void pinModeCustom(uint8_t pin, uint8_t mode)
+{
+	uint8_t bit = digitalPinToBitMask(pin); // bit mask represents the position of the pin within its port
+	uint8_t port = digitalPinToPort(pin); // maps the pin number to the corresponding port
+	volatile uint8_t *reg, *out;
+
+	if (port == NOT_A_PIN) return;
+
+	reg = portModeRegister(port); // we get for the given port the register for setting the mode to input/output
+	out = portOutputRegister(port); // we get the output register
+  
+  
+	if (mode == INPUT) { 
+		uint8_t oldSREG = SREG; // saves the current status of the global interrupt flag
+        cli(); //
+		*reg &= ~bit; // clear
+		*out &= ~bit; // clear
+		SREG = oldSREG;
+	} else if (mode == INPUT_PULLUP) {
+		uint8_t oldSREG = SREG;
+        cli(); // disables interrupts
+		*reg &= ~bit; // clear
+        // enable the internal pull-up resistor for the pin
+		*out |= bit; // set
+		SREG = oldSREG;
+	} else {
+		uint8_t oldSREG = SREG;
+        cli();
+		*reg |= bit; // set
+		SREG = oldSREG;
+	}
+}
+
+
+void digitalWriteCustom(uint8_t pin, uint8_t val)
+{
+	//uint8_t timer = digitalPinToTimer(pin);
+	uint8_t bit = digitalPinToBitMask(pin);//masca bit 
+	uint8_t port = digitalPinToPort(pin);//nr port pt pinul specificat
+	volatile uint8_t *out;//pointer catre reg de iesire al potului 
+
+	if (port == NOT_A_PIN) return;//verificare daca pin e pin
+
+	//if (timer != NOT_ON_TIMER) turnOffPWM(timer);
+
+	out = portOutputRegister(port); // we get the output register
+
+//protecti impotriva intreruperilor
+	uint8_t oldSREG = SREG; // same procedure with the interrupts
+	cli();
+
+	if (val == LOW) { // setting the output value
+		*out &= ~bit; // clear
+	} else {
+		*out |= bit; // set
+	}
+
+	SREG = oldSREG;//resetare starea registrului
+}
+
+int digitalReadCustom(uint8_t pin)
+{
+	uint8_t bit = digitalPinToBitMask(pin);
+	uint8_t port = digitalPinToPort(pin);
+
+	if (port == NOT_A_PIN) return LOW;
+
+	if (*portInputRegister(port) & bit) // accesses the input register of the given port and compares it to bit mask
+      return HIGH;
+ 
+	return LOW;
+}
+
+
+
+void setup() {
+  Wire.begin();
+
+  // Initialize the LCD
+  lcd.init();
+
+  // Turn on the backlight (if available)
+  lcd.backlight();
+  pinModeCustom(sensorPin, INPUT);
+  pinModeCustom(sensor2Pin, INPUT);
+
+  pinModeCustom(LED_BUILTIN, OUTPUT);//nu cred ca mai avem nevoie
+  for (int i = 0; i < COLS; i++) {
+    pinModeCustom(colPins[i], OUTPUT);
+    digitalWriteCustom(colPins[i], HIGH);
+  }
+
+  for (int i = 0; i < ROWS; i++) {
+    pinModeCustom(rowPins[i], INPUT_PULLUP);//activeaza rezistenta interna pt a mentine pinul pe HIGH cand nu e sursa conectata
+  }
+
+  pinModeCustom(greenLED, OUTPUT);
+  pinModeCustom(redLED, OUTPUT);
+  pinModeCustom(servoPin, OUTPUT);
+  Serial.begin(9600);//setare comunicatie la baud rate=9600
+}
+
+char getKey() {
+  for (int col = 0; col < COLS; col++) {
+    digitalWriteCustom(colPins[col], LOW);
+    for (int row = 0; row < ROWS; row++) {
+      if (digitalReadCustom(rowPins[row]) == LOW) {
+        delay(50);  // debounce delay
+        while (digitalReadCustom(rowPins[row]) == LOW);
+        digitalWriteCustom(colPins[col], HIGH);
+        return keys[row][col];
+      }
+    }
+    digitalWriteCustom(colPins[col], HIGH);
+  }
+  return '\0';
+}
+
+void rotateServo(int angle)
+{
+  int pulseWidth = map(angle, 0, 180, 1000, 2000);//impuls de 1000 pozitioneaza servomotorul la 0 grade, impuls de 2000 pozitioneaza servomotorul la 180 grade 
+  for (int i = 0; i < 10; i++) { //genereaza pwm de 10 ori pentru a se asigura ca servo il primeste
+    digitalWriteCustom(servoPin, HIGH);//seteaza pin pt a incepe impulsul
+    delayMicroseconds(pulseWidth);
+    digitalWriteCustom(servoPin, LOW);//reseteaza pin la finalul impulsului
+    delay(20);//asteapta 20 milisecunde inainte de a genera urmatorul impuls
+ }
+}
+
+void checkPassword() {
+  if (unlock == password) {
+    isLocked = false;
+    digitalWriteCustom(redLED, LOW);
+    digitalWriteCustom(greenLED, LOW);
+    rotateServo(0);
+    digitalWriteCustom(greenLED, HIGH);
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Sistem dezarmat");
+    delay(2000);
+  } else if (lock == password) {
+    isLocked = true;
+    digitalWriteCustom(redLED, LOW);
+    digitalWriteCustom(greenLED, LOW);
+    rotateServo(180);
+    digitalWriteCustom(redLED, HIGH);
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Sistem armat");
+    delay(2000);
+  }
+  password = "";
+}
+
+
+
+void loop() {
+  int value1 = digitalRead(sensorPin);
+  int value2 = digitalRead(sensor2Pin);
+
+  if ((value1 == HIGH && value2 == HIGH) && isLocked) {
+    lcd.setCursor(0, 0);
+      lcd.print("Motion Detected");
+      lcd.setCursor(0, 1);
+      lcd.print("Room1 & Room2");
+      tone(buzzer, 1000);
+      delay(2000);
+      tone(buzzer,450);
+      delay(2000);
+      tone(buzzer,1000);
+      delay(2000);
+      tone(buzzer,1000);
+      delay(2000);
+      noTone(buzzer);
+      lcd.clear();
+  } else if (value1 == HIGH && isLocked) {
+    if (value2 == HIGH) {
+      lcd.setCursor(0, 0);
+      lcd.print("Motion Detected");
+      lcd.setCursor(0, 1);
+      lcd.print("Room1 & Room2");
+      tone(buzzer, 1000);
+      delay(2000);
+      tone(buzzer,450);
+      delay(2000);
+      tone(buzzer,1000);
+      delay(2000);
+      tone(buzzer,1000);
+      delay(2000);
+      noTone(buzzer);
+      lcd.clear();
+    } else {
+      lcd.setCursor(0, 0);
+      tone(buzzer, 450);
+      lcd.print("Motion Detected");
+      lcd.setCursor(0, 1);
+      lcd.print("Room1");
+      delay(2000);
+      noTone(buzzer);
+      lcd.clear();
+    }
+  } else if (value2 == HIGH && isLocked) {
+    if (value1 == HIGH) {
+      lcd.setCursor(0, 0);
+      lcd.print("Motion Detected");
+      lcd.setCursor(0, 1);
+      lcd.print("Room1 & Room2");
+      tone(buzzer, 1000);
+      delay(2000);
+      tone(buzzer,450);
+      delay(2000);
+      tone(buzzer,1000);
+      delay(2000);
+      tone(buzzer,1000);
+      delay(2000);
+      noTone(buzzer);
+      lcd.clear();
+    } else {
+      lcd.setCursor(0, 0);
+      tone(buzzer, 1000);
+      lcd.print("Motion Detected");
+      lcd.setCursor(0, 1);
+      lcd.print("Room2");
+      delay(2000);
+      noTone(buzzer);
+      lcd.clear();
+    }
+  } 
+
+  char key = getKey();
+  if(key != '*' && key != '\0')
+  {
+    password += key;
+    Serial.println(password);
+  }
+  else if(key == '*' && password.length() == 4)
+  {
+    checkPassword();
+    password = "";
+  }
+  else if(key == '*')
+  {
+    password = "";
+  }
+
+  delay(100); // Small delay to avoid bouncing issues
+}
